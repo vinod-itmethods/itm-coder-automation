@@ -1,0 +1,33 @@
+node_modules/
+dist/
+.aws-sam/
+.env
+*.js
+*.js.map
+*.d.ts
+!vitest.config.ts
+
+# SAM
+samconfig.toml
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Coverage
+coverage/

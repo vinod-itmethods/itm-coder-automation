@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ONEdevops - Slack to Coder workspace provisioning via Bedrock AI
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        SECRETS_PREFIX: onedevops
+        LOG_LEVEL: info
+        NODE_OPTIONS: '--enable-source-maps'
+
+Parameters:
+  Stage:
+    Type: String
+    Default: stage
+    AllowedValues: [stage, prod]
+  CoderBaseUrl:
+    Type: String
+    Default: ''
+    Description: Coder instance URL (leave blank to stub)
+  CoderOrgId:
+    Type: String
+    Default: default
+  BedrockModelId:
+    Type: String
+    Default: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+
+Resources:
+
+  # ============================================================
+  # HTTP API Gateway
+  # ============================================================
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Stage
+      Description: ONEdevops Slack webhook endpoint
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - POST
+          - GET
+
+  # ============================================================
+  # Lambda: Webhook (Slack event receiver)
+  # ============================================================
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub onedevops-webhook-${Stage}
+      Handler: src/webhook/index.handler
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          ORCHESTRATOR_FUNCTION_NAME: !Ref OrchestratorFunction
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt OrchestratorFunction.Arn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:onedevops/*
+      Events:
+        SlackEvents:
+          Type: HttpApi
+          Properties:
+            Path: /slack/events
+            Method: POST
+            ApiId: !Ref HttpApi
+        Health:
+          Type: HttpApi
+          Properties:
+            Path: /health
+            Method: GET
+            ApiId: !Ref HttpApi
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/webhook/index.ts
+        External:
+          - '@aws-sdk/*'
+
+  # ============================================================
+  # Lambda: Orchestrator (async worker)
+  # ============================================================
+  OrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub onedevops-orchestrator-${Stage}
+      Handler: src/orchestrator/index.handler
+      MemorySize: 512
+      Timeout: 300
+      Environment:
+        Variables:
+          TRACES_TABLE_NAME: !Ref TracesTable
+          CODER_BASE_URL: !Ref CoderBaseUrl
+          CODER_ORG_ID: !Ref CoderOrgId
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_REGION: !Ref AWS::Region
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:onedevops/*
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-*
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-*
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt TracesTable.Arn
+                - !Sub ${TracesTable.Arn}/index/*
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - src/orchestrator/index.ts
+        External:
+          - '@aws-sdk/*'
+
+  # ============================================================
+  # DynamoDB: Traces Table
+  # ============================================================
+  TracesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub onedevops-traces-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: traceId
+          AttributeType: S
+        - AttributeName: eventKey
+          AttributeType: S
+        - AttributeName: slackUserId
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: traceId
+          KeyType: HASH
+        - AttributeName: eventKey
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: by-user
+          KeySchema:
+            - AttributeName: slackUserId
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ============================================================
+  # CloudWatch Log Groups
+  # ============================================================
+  WebhookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/onedevops-webhook-${Stage}
+      RetentionInDays: 30
+
+  OrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/onedevops-orchestrator-${Stage}
+      RetentionInDays: 30
+
+  TraceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /onedevops/traces-${Stage}
+      RetentionInDays: 90
+
+# ============================================================
+# Outputs
+# ============================================================
+Outputs:
+  WebhookUrl:
+    Description: Slack Event Subscriptions URL (configure in Slack App settings)
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/slack/events
+  HealthUrl:
+    Description: Health check endpoint
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/health
+  TracesTableName:
+    Description: DynamoDB traces table name
+    Value: !Ref TracesTable
+  OrchestratorFunctionArn:
+    Description: Orchestrator Lambda ARN
+    Value: !GetAtt OrchestratorFunction.Arn
+  WebhookFunctionArn:
+    Description: Webhook Lambda ARN
+    Value: !GetAtt WebhookFunction.Arn
