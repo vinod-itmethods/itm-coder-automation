@@ -66,11 +66,11 @@ Rules:
 const FEW_SHOT_EXAMPLES = [
   {
     role: 'user' as const,
-    content: '@ONEdevops onboard backend dev for repo payments-api',
+    content: [{ text: '@ONEdevops onboard backend dev for repo payments-api' }],
   },
   {
     role: 'assistant' as const,
-    content: JSON.stringify({
+    content: [{ text: JSON.stringify({
       action: 'create_workspace',
       confidence: 0.9,
       workspace: { name: 'payments-api-dev', templateId: 'default', templateName: 'Default' },
@@ -85,15 +85,15 @@ const FEW_SHOT_EXAMPLES = [
         'Configure git identity',
         'Install GitHub Copilot extension',
       ],
-    }),
+    }) }],
   },
   {
     role: 'user' as const,
-    content: '@ONEdevops create workspace repo org/frontend-app template react-node',
+    content: [{ text: '@ONEdevops create workspace repo org/frontend-app template react-node' }],
   },
   {
     role: 'assistant' as const,
-    content: JSON.stringify({
+    content: [{ text: JSON.stringify({
       action: 'create_workspace',
       confidence: 0.95,
       workspace: { name: 'frontend-app', templateId: 'react-node', templateName: 'React + Node.js' },
@@ -107,7 +107,7 @@ const FEW_SHOT_EXAMPLES = [
         'Create onboarding branch',
         'Configure development environment',
       ],
-    }),
+    }) }],
   },
 ];
 
@@ -126,7 +126,7 @@ export async function parseIntent(
     ...FEW_SHOT_EXAMPLES,
     {
       role: 'user' as const,
-      content: `Context: slackUserId=${slackUserId}, today=${today}\n\n${messageText}`,
+      content: [{ text: `Context: slackUserId=${slackUserId}, today=${today}\n\n${messageText}` }],
     },
   ];
 
@@ -141,22 +141,24 @@ export async function parseIntent(
       contentType: 'application/json',
       accept: 'application/json',
       body: JSON.stringify({
-        anthropic_version: 'bedrock-2023-05-31',
-        max_tokens: 1024,
-        system: systemPrompt,
+        schemaVersion: 'messages-v1',
+        system: [{ text: systemPrompt }],
         messages,
-        temperature: 0.1,
+        inferenceConfig: {
+          max_new_tokens: 1024,
+          temperature: 0.1,
+        },
       }),
     })
   );
 
   const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  const rawText: string = responseBody.content?.[0]?.text || '';
+  const rawText: string = responseBody.output?.message?.content?.[0]?.text || '';
 
   logger.info('Bedrock response received', {
     responseLength: rawText.length,
-    inputTokens: responseBody.usage?.input_tokens,
-    outputTokens: responseBody.usage?.output_tokens,
+    inputTokens: responseBody.usage?.inputTokens,
+    outputTokens: responseBody.usage?.outputTokens,
   });
 
   // Parse and validate

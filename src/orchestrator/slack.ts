@@ -18,12 +18,14 @@ async function getClient(): Promise<WebClient> {
 export async function postStatusMessage(
   channel: string,
   intent: ParsedIntent,
-  traceId: string
+  traceId: string,
+  threadTs?: string
 ): Promise<string> {
   const client = await getClient();
 
   const result = await client.chat.postMessage({
     channel,
+    thread_ts: threadTs,
     text: `Provisioning workspace "${intent.workspace.name}"...`,
     blocks: [
       {
@@ -136,7 +138,8 @@ export async function postError(
   channel: string,
   messageTs: string | null,
   error: string,
-  traceId: string
+  traceId: string,
+  threadTs?: string
 ): Promise<void> {
   const client = await getClient();
 
@@ -150,20 +153,12 @@ export async function postError(
     },
   ];
 
-  if (messageTs) {
-    await client.chat.postMessage({
-      channel,
-      thread_ts: messageTs,
-      text: `Provisioning failed: ${error}`,
-      blocks,
-    });
-  } else {
-    await client.chat.postMessage({
-      channel,
-      text: `Provisioning failed: ${error}`,
-      blocks,
-    });
-  }
+  await client.chat.postMessage({
+    channel,
+    thread_ts: messageTs || threadTs,
+    text: `Provisioning failed: ${error}`,
+    blocks,
+  });
 
   logger.error('Posted error to Slack', { channel, error, traceId });
 }
@@ -173,12 +168,14 @@ export async function postError(
 // ============================================================
 export async function postClarification(
   channel: string,
-  message: string
+  message: string,
+  threadTs?: string
 ): Promise<void> {
   const client = await getClient();
 
   await client.chat.postMessage({
     channel,
+    thread_ts: threadTs,
     text: message,
     blocks: [
       {

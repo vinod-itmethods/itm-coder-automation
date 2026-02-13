@@ -65,6 +65,11 @@ resource "aws_iam_role_policy_attachment" "orchestrator_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "orchestrator_vpc" {
+  role       = aws_iam_role.orchestrator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "orchestrator_custom" {
   name = "onedevops-orchestrator-policy-${var.stage}"
   role = aws_iam_role.orchestrator.id
@@ -81,8 +86,8 @@ resource "aws_iam_role_policy" "orchestrator_custom" {
         Effect = "Allow"
         Action = "bedrock:InvokeModel"
         Resource = [
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-*",
-          "arn:aws:bedrock:${var.aws_region}:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-*"
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.nova-lite-v1:0",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.nova-*"
         ]
       },
       {

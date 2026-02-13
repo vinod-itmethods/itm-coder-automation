@@ -1,0 +1,68 @@
+##############################################
+# Coder Provisioner RBAC for Workspace Pods
+#
+# Apply with: kubectl apply -f coder-provisioner-rbac.yaml
+#
+# This grants the Coder provisioner service account
+# permissions to create workspace pods and PVCs.
+##############################################
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: coder-provisioner-workspaces
+  namespace: lab-poc-coder
+rules:
+  # Core resources for workspace pods
+  - apiGroups: [""]
+    resources:
+      - pods
+      - persistentvolumeclaims
+      - services
+      - secrets
+      - configmaps
+      - serviceaccounts
+      - events
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Needed for Coder agent exec and logs
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+      - pods/log
+    verbs: ["get", "create"]
+  # Deployments/statefulsets (optional, for advanced templates)
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+# Bind to the "coder" service account (used by provisioner)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: coder-provisioner-workspaces
+  namespace: lab-poc-coder
+subjects:
+  - kind: ServiceAccount
+    name: coder
+    namespace: lab-poc-coder
+roleRef:
+  kind: Role
+  name: coder-provisioner-workspaces
+  apiGroup: rbac.authorization.k8s.io
+---
+# Also bind to "coder-provisioner" SA (if separate from "coder")
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: coder-provisioner-workspaces-provisioner
+  namespace: lab-poc-coder
+subjects:
+  - kind: ServiceAccount
+    name: coder-provisioner
+    namespace: lab-poc-coder
+roleRef:
+  kind: Role
+  name: coder-provisioner-workspaces
+  apiGroup: rbac.authorization.k8s.io

@@ -54,6 +54,11 @@ resource "aws_lambda_function" "orchestrator" {
   filename         = data.archive_file.orchestrator.output_path
   source_code_hash = data.archive_file.orchestrator.output_base64sha256
 
+  vpc_config {
+    subnet_ids         = var.orchestrator_subnet_ids
+    security_group_ids = [aws_security_group.orchestrator.id]
+  }
+
   environment {
     variables = {
       TRACES_TABLE_NAME = aws_dynamodb_table.traces.name
@@ -70,5 +75,27 @@ resource "aws_lambda_function" "orchestrator" {
   depends_on = [
     aws_cloudwatch_log_group.orchestrator,
     aws_iam_role_policy_attachment.orchestrator_basic,
+    aws_iam_role_policy_attachment.orchestrator_vpc,
   ]
+}
+
+# ============================================================
+# Security Group: Orchestrator Lambda
+# ============================================================
+resource "aws_security_group" "orchestrator" {
+  name        = "onedevops-orchestrator-${var.stage}"
+  description = "Orchestrator Lambda - egress HTTPS only"
+  vpc_id      = var.vpc_id
+
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS to Coder, Bedrock, Slack, AWS APIs"
+  }
+
+  tags = {
+    Name = "onedevops-orchestrator-${var.stage}"
+  }
 }

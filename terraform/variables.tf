@@ -25,7 +25,7 @@ variable "stage" {
 variable "coder_base_url" {
   description = "Coder instance URL (leave empty to stub)"
   type        = string
-  default     = ""
+  default     = "https://labcoder.stage.0658b-techopscore.com"
 }
 
 variable "coder_org_id" {
@@ -35,13 +35,25 @@ variable "coder_org_id" {
 }
 
 variable "bedrock_model_id" {
-  description = "Bedrock inference profile ID"
+  description = "Bedrock model ID"
   type        = string
-  default     = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+  default     = "amazon.nova-lite-v1:0"
 }
 
 variable "log_level" {
   description = "Application log level"
   type        = string
   default     = "info"
+}
+
+variable "vpc_id" {
+  description = "VPC ID for orchestrator Lambda"
+  type        = string
+  default     = "vpc-09571c6702a8b8547"
+}
+
+variable "orchestrator_subnet_ids" {
+  description = "Private subnet IDs for orchestrator Lambda (must have NAT Gateway)"
+  type        = list(string)
+  default     = ["subnet-0b5d0835fbac176c1", "subnet-05cb8969b8ec58541"]
 }

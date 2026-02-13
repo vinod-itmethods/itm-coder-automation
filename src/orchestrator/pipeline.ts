@@ -47,7 +47,8 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
         `I'm not fully sure what you're asking for (confidence: ${Math.round(intent.confidence * 100)}%).\n\n` +
           `My best guess:\n${intent.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\n` +
           `Available templates: ${templateNames.join(', ')}\n\n` +
-          `Try: \`@ONEdevops onboard <role> for repo <name> template <template>\``
+          `Try: \`@ONEdevops onboard <role> for repo <name> template <template>\``,
+        payload.messageTs
       );
       return;
     }
@@ -59,11 +60,12 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
       intent.repository.url = github.normalizeRepoUrl(intent.repository.url);
     }
 
-    // ---- 6. Post status to Slack ----
+    // ---- 6. Post status to Slack (in thread) ----
     messageTs = await slack.postStatusMessage(
       payload.slackChannel,
       intent,
-      traceId
+      traceId,
+      payload.messageTs
     );
 
     // ---- 7. Validate GitHub repo (if specified) ----
@@ -74,7 +76,8 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
           payload.slackChannel,
           messageTs,
           `Repository "${intent.repository.url}" not found or not accessible. Please check the URL and ensure the GitHub token has access.`,
-          traceId
+          traceId,
+          payload.messageTs
         );
         await tracer.emitError('Repository not found', { repoUrl: intent.repository.url });
         return;
@@ -89,7 +92,8 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
         payload.slackChannel,
         messageTs,
         `Template "${intent.workspace.templateId}" not found.\n\nAvailable: ${available}`,
-        traceId
+        traceId,
+        payload.messageTs
       );
       await tracer.emitError('Template not found', { templateId: intent.workspace.templateId });
       return;
@@ -201,7 +205,8 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
       payload.slackChannel,
       messageTs,
       `An error occurred: ${errorMessage}`,
-      traceId
+      traceId,
+      payload.messageTs
     );
   }
 }

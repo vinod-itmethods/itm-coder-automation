@@ -22,6 +22,8 @@ async function coderFetch<T>(path: string, options: RequestInit = {}): Promise<T
   const token = await getToken();
   const url = `${config.coderBaseUrl}${path}`;
 
+  logger.info('Coder API request', { method: options.method || 'GET', url });
+
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -34,6 +36,13 @@ async function coderFetch<T>(path: string, options: RequestInit = {}): Promise<T
 
   if (!response.ok) {
     const body = await response.text();
+    logger.error('Coder API error', {
+      status: response.status,
+      statusText: response.statusText,
+      url,
+      responseHeaders: Object.fromEntries(response.headers.entries()),
+      body: body.substring(0, 500),
+    });
     throw new Error(`Coder API ${response.status}: ${body}`);
   }
 
@@ -57,7 +66,7 @@ export async function listTemplates(): Promise<CoderTemplate[]> {
   }
 
   return withRetry(
-    () => coderFetch<CoderTemplate[]>('/api/v2/templates'),
+    () => coderFetch<CoderTemplate[]>(`/api/v2/organizations/${config.coderOrgId}/templates`),
     'Coder:listTemplates'
   );
 }
@@ -110,13 +119,23 @@ export async function createWorkspace(
     };
   }
 
+  // Coder API: template_id and template_version_id are mutually exclusive
+  // Use template_id only (Coder will use the active version)
+  const body: Record<string, unknown> = {
+    name: params.name,
+    template_id: params.template_id,
+  };
+  if (params.rich_parameter_values?.length) {
+    body.rich_parameter_values = params.rich_parameter_values;
+  }
+
   return withRetry(
     () =>
       coderFetch<CoderWorkspace>(
         `/api/v2/organizations/${orgId}/members/me/workspaces`,
         {
           method: 'POST',
-          body: JSON.stringify(params),
+          body: JSON.stringify(body),
         }
       ),
     'Coder:createWorkspace'
