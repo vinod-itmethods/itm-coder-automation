@@ -58,3 +58,23 @@ export async function getGitHubToken(): Promise<string> {
   const parsed = parseJsonSecret(raw);
   return parsed.token || parsed.value || raw;
 }
+
+export async function getJiraCredentials(): Promise<{
+  baseUrl: string;
+  email: string;
+  apiToken: string;
+}> {
+  const raw = await getSecret('jira/credentials');
+  const parsed = JSON.parse(raw);
+  return {
+    baseUrl: parsed.baseUrl,
+    email: parsed.email,
+    apiToken: parsed.apiToken,
+  };
+}
+
+export async function getJiraWebhookSecret(): Promise<string> {
+  const raw = await getSecret('jira/webhook-secret');
+  const parsed = parseJsonSecret(raw);
+  return parsed.secret || parsed.value || raw;
+}

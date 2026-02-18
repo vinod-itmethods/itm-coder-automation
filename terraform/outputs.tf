@@ -27,3 +27,13 @@ output "api_gateway_id" {
   description = "API Gateway ID"
   value       = aws_apigatewayv2_api.onedevops.id
 }
+
+output "jira_webhook_url" {
+  description = "Jira webhook URL (append ?secret=<webhook-secret>)"
+  value       = "${aws_apigatewayv2_api.onedevops.api_endpoint}/${var.stage}/jira/events"
+}
+
+output "jira_webhook_function_arn" {
+  description = "Jira Webhook Lambda ARN"
+  value       = aws_lambda_function.jira_webhook.arn
+}

@@ -52,11 +52,40 @@ resource "aws_apigatewayv2_route" "health" {
   target    = "integrations/${aws_apigatewayv2_integration.webhook.id}"
 }
 
+# Jira webhook integration
+resource "aws_apigatewayv2_integration" "jira_webhook" {
+  api_id                 = aws_apigatewayv2_api.onedevops.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.jira_webhook.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "jira_events" {
+  api_id    = aws_apigatewayv2_api.onedevops.id
+  route_key = "POST /jira/events"
+  target    = "integrations/${aws_apigatewayv2_integration.jira_webhook.id}"
+}
+
+resource "aws_apigatewayv2_route" "jira_events_get" {
+  api_id    = aws_apigatewayv2_api.onedevops.id
+  route_key = "GET /jira/events"
+  target    = "integrations/${aws_apigatewayv2_integration.jira_webhook.id}"
+}
+
 # Permission for API GW to invoke webhook Lambda
 resource "aws_lambda_permission" "apigw_webhook" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.webhook.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.onedevops.execution_arn}/*/*"
+}
+
+# Permission for API GW to invoke Jira webhook Lambda
+resource "aws_lambda_permission" "apigw_jira_webhook" {
+  statement_id  = "AllowAPIGatewayInvokeJira"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.jira_webhook.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.onedevops.execution_arn}/*/*"
 }
@@ -119,6 +148,11 @@ resource "aws_cloudwatch_log_group" "orchestrator" {
 resource "aws_cloudwatch_log_group" "traces" {
   name              = "/onedevops/traces-${var.stage}"
   retention_in_days = 90
+}
+
+resource "aws_cloudwatch_log_group" "jira_webhook" {
+  name              = "/aws/lambda/onedevops-jira-webhook-${var.stage}"
+  retention_in_days = 30
 }
 
 resource "aws_cloudwatch_log_group" "api_access" {

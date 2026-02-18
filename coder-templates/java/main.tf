@@ -2,7 +2,7 @@ terraform {
   required_providers {
     coder = {
       source  = "coder/coder"
-      version = "~> 2.5"
+      version = ">= 2.13"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -27,6 +27,14 @@ provider "kubernetes" {}
 resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
   os   = "linux"
+
+  # AI Bridge: route AI traffic through Coder for governance, audit & cost tracking
+  env = {
+    ANTHROPIC_BASE_URL = "${data.coder_workspace.me.access_url}/api/v2/aibridge/anthropic"
+    ANTHROPIC_API_KEY  = data.coder_workspace_owner.me.session_token
+    OPENAI_BASE_URL    = "${data.coder_workspace.me.access_url}/api/v2/aibridge/openai/v1"
+    OPENAI_API_KEY     = data.coder_workspace_owner.me.session_token
+  }
 
   startup_script = <<-EOT
     set -e

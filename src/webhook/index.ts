@@ -53,8 +53,8 @@ async function invokeOrchestrator(payload: OrchestratorPayload): Promise<void> {
   );
 
   logger.info('Orchestrator invoked async', {
-    slackUser: payload.slackUserId,
-    channel: payload.slackChannel,
+    source: payload.source,
+    requesterId: payload.requesterId,
   });
 }
 
@@ -92,25 +92,37 @@ export async function handler(
     };
   }
 
-  // Handle app_mention events
-  if (payload.type === 'event_callback' && payload.event?.type === 'app_mention') {
-    const { user, text, channel, ts } = payload.event;
+  // Handle app_mention and DM (message.im) events
+  if (payload.type === 'event_callback') {
+    const eventType = payload.event?.type;
 
-    logger.info('Received app_mention', { user, channel, textLength: text.length });
+    // Process app_mention (channel) and message (DM) events
+    if (eventType === 'app_mention' || eventType === 'message') {
+      const { user, text, channel, ts } = payload.event!;
 
-    const orchestratorPayload: OrchestratorPayload = {
-      slackUserId: user,
-      slackChannel: channel,
-      messageText: text,
-      messageTs: ts,
-    };
+      // Ignore bot's own messages to prevent loops
+      if (payload.event?.bot_id || payload.event?.subtype) {
+        logger.debug('Ignoring bot/subtype message', { bot_id: payload.event?.bot_id, subtype: payload.event?.subtype });
+        return { statusCode: 200, body: '' };
+      }
 
-    await invokeOrchestrator(orchestratorPayload);
+      logger.info('Received slack event', { eventType, user, channel, textLength: text.length });
 
-    return { statusCode: 200, body: '' };
+      const orchestratorPayload: OrchestratorPayload = {
+        source: 'slack',
+        requesterId: user,
+        slackChannel: channel,
+        messageText: text,
+        messageTs: ts,
+      };
+
+      await invokeOrchestrator(orchestratorPayload);
+
+      return { statusCode: 200, body: '' };
+    }
   }
 
   // Unknown event type — ack silently
-  logger.debug('Unhandled event type', { type: payload.type });
+  logger.debug('Unhandled event type', { type: payload.type, eventType: payload.event?.type });
   return { statusCode: 200, body: '' };
 }

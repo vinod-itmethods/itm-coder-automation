@@ -62,5 +62,52 @@ create_secret "github/token" "GitHub personal access token (repo scope)" "token"
 create_secret "coder/api-token" "Coder API session token" "token"
 
 echo ""
+echo "=== Jira Integration Secrets ==="
+echo ""
+
+create_jira_credentials() {
+  local name="jira/credentials"
+  echo "---"
+  echo "Secret: $PREFIX/$name"
+  echo "Description: Jira Cloud credentials (baseUrl, email, apiToken)"
+
+  read -p "Jira base URL (e.g. https://yoursite.atlassian.net): " base_url
+  read -p "Jira email: " email
+  read -s -p "Jira API token: " api_token
+  echo ""
+
+  if [ -z "$base_url" ] || [ -z "$email" ] || [ -z "$api_token" ]; then
+    echo "  SKIPPED (empty values)"
+    return
+  fi
+
+  local json_value="{\"baseUrl\": \"$base_url\", \"email\": \"$email\", \"apiToken\": \"$api_token\"}"
+
+  if aws secretsmanager describe-secret --secret-id "$PREFIX/$name" --region "$REGION" --profile "$PROFILE" >/dev/null 2>&1; then
+    echo "  Secret exists, updating..."
+    aws secretsmanager put-secret-value \
+      --secret-id "$PREFIX/$name" \
+      --secret-string "$json_value" \
+      --region "$REGION" \
+      --profile "$PROFILE" \
+      --no-cli-pager >/dev/null
+  else
+    echo "  Creating secret..."
+    aws secretsmanager create-secret \
+      --name "$PREFIX/$name" \
+      --description "Jira Cloud credentials" \
+      --secret-string "$json_value" \
+      --region "$REGION" \
+      --profile "$PROFILE" \
+      --no-cli-pager >/dev/null
+  fi
+
+  echo "  Done."
+}
+
+create_jira_credentials
+create_secret "jira/webhook-secret" "Shared secret for Jira webhook verification" "secret"
+
+echo ""
 echo "=== All secrets configured ==="
 echo "Verify: aws secretsmanager list-secrets --filter Key=name,Values=$PREFIX --region $REGION --profile $PROFILE --query 'SecretList[*].Name' --output table"

@@ -29,6 +29,7 @@ export interface ParsedIntent {
 // ============================================================
 export type TraceEventType =
   | 'received_slack_message'
+  | 'received_jira_comment'
   | 'parsed_intent'
   | 'bedrock_plan_created'
   | 'coder_template_selected'
@@ -71,17 +72,62 @@ export interface SlackEventPayload {
     channel: string;
     ts: string;
     event_ts: string;
+    bot_id?: string;
+    subtype?: string;
+    channel_type?: string;
   };
 }
 
 // ============================================================
 // Orchestrator Payload (webhook → orchestrator)
 // ============================================================
-export interface OrchestratorPayload {
-  slackUserId: string;
-  slackChannel: string;
+interface BasePayload {
   messageText: string;
+  requesterId: string;
+}
+
+export interface SlackPayload extends BasePayload {
+  source: 'slack';
+  slackChannel: string;
   messageTs: string;
+}
+
+export interface JiraPayload extends BasePayload {
+  source: 'jira';
+  issueKey: string;
+  issueId: string;
+  projectKey: string;
+  commentAuthor: string;
+}
+
+export type OrchestratorPayload = SlackPayload | JiraPayload;
+
+// ============================================================
+// Jira Webhook Types
+// ============================================================
+export interface JiraWebhookEvent {
+  webhookEvent: string;
+  issue: {
+    id: string;
+    key: string;
+    fields: {
+      project: {
+        key: string;
+        name: string;
+      };
+      summary: string;
+    };
+  };
+  comment: {
+    id: string;
+    body: string;
+    author: {
+      accountId: string;
+      displayName: string;
+      emailAddress?: string;
+    };
+    created: string;
+  };
 }
 
 // ============================================================

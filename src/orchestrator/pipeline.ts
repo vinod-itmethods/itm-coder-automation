@@ -2,23 +2,61 @@ import { randomUUID } from 'node:crypto';
 import { OneAgentTracer } from '../shared/tracer.js';
 import { logger } from '../shared/logger.js';
 import { getConfig } from '../shared/config.js';
-import { parseIntent } from './bedrock.js';
-import * as slack from './slack.js';
+import { parseIntent, classifyMessageIntent } from './bedrock.js';
+import { SlackNotifier } from './slack.js';
+import { handleKbQuery } from './kb-handler.js';
+import { JiraNotifier } from './jira.js';
 import * as coder from './coder.js';
 import * as github from './github.js';
 import type { OrchestratorPayload } from '../shared/types.js';
+import type { StatusNotifier } from './notifier.js';
+
+function createNotifier(payload: OrchestratorPayload): StatusNotifier {
+  if (payload.source === 'jira') {
+    return new JiraNotifier(payload.issueKey);
+  }
+  return new SlackNotifier(payload.slackChannel, payload.messageTs);
+}
+
+export async function routeMessage(payload: OrchestratorPayload): Promise<void> {
+  // Jira comments always go to workspace provisioning
+  if (payload.source !== 'slack') {
+    return runPipeline(payload);
+  }
+
+  const notifier = new SlackNotifier(payload.slackChannel, payload.messageTs);
+  const category = await classifyMessageIntent(payload.messageText);
+
+  logger.info('Message routed', { category, requesterId: payload.requesterId });
+
+  switch (category) {
+    case 'kb_query':
+      return handleKbQuery(payload.messageText, notifier, payload.requesterId);
+    case 'workspace_provision':
+      return runPipeline(payload);
+    default:
+      return notifier.postClarification(
+        'I can help with two things:\n\n' +
+        '• :mag: *Search knowledge base* — e.g. "What were the key issues with CIBC?"\n' +
+        '• :computer: *Provision workspace* — e.g. "Onboard backend dev for repo payments-api"\n\n' +
+        'Which would you like?'
+      );
+  }
+}
 
 export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
   const traceId = randomUUID();
-  const tracer = new OneAgentTracer(traceId, payload.slackUserId);
+  const tracer = new OneAgentTracer(traceId, payload.requesterId);
+  const notifier = createNotifier(payload);
   const startTime = Date.now();
-  let messageTs: string | null = null;
+  let handle: string | null = null;
 
   try {
     // ---- 1. Trace: received ----
-    await tracer.emit('received_slack_message', {
-      channel: payload.slackChannel,
-      user: payload.slackUserId,
+    const receivedEvent = payload.source === 'jira' ? 'received_jira_comment' : 'received_slack_message';
+    await tracer.emit(receivedEvent, {
+      source: payload.source,
+      requesterId: payload.requesterId,
       textLength: payload.messageText.length,
     });
 
@@ -30,7 +68,7 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
     tracer.startTimer('parsed_intent');
     const intent = await parseIntent(
       payload.messageText,
-      payload.slackUserId,
+      payload.requesterId,
       templateNames
     );
     await tracer.emit('parsed_intent', {
@@ -42,13 +80,11 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
 
     // ---- 4. Check confidence ----
     if (intent.confidence < 0.7) {
-      await slack.postClarification(
-        payload.slackChannel,
+      await notifier.postClarification(
         `I'm not fully sure what you're asking for (confidence: ${Math.round(intent.confidence * 100)}%).\n\n` +
           `My best guess:\n${intent.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\n` +
           `Available templates: ${templateNames.join(', ')}\n\n` +
-          `Try: \`@ONEdevops onboard <role> for repo <name> template <template>\``,
-        payload.messageTs
+          `Try: \`@ONEdevops onboard <role> for repo <name> template <template>\``
       );
       return;
     }
@@ -60,24 +96,17 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
       intent.repository.url = github.normalizeRepoUrl(intent.repository.url);
     }
 
-    // ---- 6. Post status to Slack (in thread) ----
-    messageTs = await slack.postStatusMessage(
-      payload.slackChannel,
-      intent,
-      traceId,
-      payload.messageTs
-    );
+    // ---- 6. Post status message ----
+    handle = await notifier.postStatusMessage(intent, traceId);
 
     // ---- 7. Validate GitHub repo (if specified) ----
     if (intent.repository.url) {
       const repo = await github.validateRepo(intent.repository.url);
       if (!repo) {
-        await slack.postError(
-          payload.slackChannel,
-          messageTs,
+        await notifier.postError(
+          handle,
           `Repository "${intent.repository.url}" not found or not accessible. Please check the URL and ensure the GitHub token has access.`,
-          traceId,
-          payload.messageTs
+          traceId
         );
         await tracer.emitError('Repository not found', { repoUrl: intent.repository.url });
         return;
@@ -88,12 +117,10 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
     const template = coder.matchTemplate(templates, intent.workspace.templateId);
     if (!template) {
       const available = templates.map((t) => `\`${t.name}\` (${t.display_name})`).join(', ');
-      await slack.postError(
-        payload.slackChannel,
-        messageTs,
+      await notifier.postError(
+        handle,
         `Template "${intent.workspace.templateId}" not found.\n\nAvailable: ${available}`,
-        traceId,
-        payload.messageTs
+        traceId
       );
       await tracer.emitError('Template not found', { templateId: intent.workspace.templateId });
       return;
@@ -105,12 +132,16 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
     });
 
     // ---- 9. Create Coder workspace ----
-    await slack.updateStatus(payload.slackChannel, messageTs, 'Creating workspace...', ':gear:');
+    await notifier.updateStatus(handle, 'Creating workspace...', ':gear:');
+
+    // Append short unique suffix to avoid name collisions on repeated requests
+    const suffix = randomUUID().slice(0, 6);
+    const workspaceName = `${intent.workspace.name}-${suffix}`.slice(0, 32);
 
     const config = getConfig();
     tracer.startTimer('coder_workspace_created');
     const workspace = await coder.createWorkspace(config.coderOrgId, {
-      name: intent.workspace.name,
+      name: workspaceName,
       template_id: template.id,
       template_version_id: template.active_version_id,
       rich_parameter_values: intent.repository.url
@@ -123,14 +154,13 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
     });
 
     // ---- 10. Poll until ready ----
-    await slack.updateStatus(payload.slackChannel, messageTs, 'Building workspace...', ':hammer:');
+    await notifier.updateStatus(handle, 'Building workspace...', ':hammer:');
 
     const readyWorkspace = await coder.pollUntilReady(
       workspace.id,
       async (status) => {
-        await slack.updateStatus(
-          payload.slackChannel,
-          messageTs!,
+        await notifier.updateStatus(
+          handle!,
           `Build status: ${status}`,
           ':hourglass_flowing_sand:'
         );
@@ -139,7 +169,7 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
 
     // ---- 11. Git clone + configure ----
     if (intent.repository.url) {
-      await slack.updateStatus(payload.slackChannel, messageTs, 'Cloning repository...', ':package:');
+      await notifier.updateStatus(handle, 'Cloning repository...', ':package:');
 
       tracer.startTimer('repo_cloned');
       await coder.execInWorkspace(
@@ -182,9 +212,8 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
       durationSec,
     });
 
-    await slack.postCompletion(
-      payload.slackChannel,
-      messageTs,
+    await notifier.postCompletion(
+      handle,
       workspaceUrl,
       tracer.getTraceUrl(),
       durationSec
@@ -192,6 +221,7 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
 
     logger.info('Pipeline completed successfully', {
       traceId,
+      source: payload.source,
       workspaceName: workspace.name,
       durationSec,
     });
@@ -201,12 +231,10 @@ export async function runPipeline(payload: OrchestratorPayload): Promise<void> {
 
     await tracer.emitError(errorMessage);
 
-    await slack.postError(
-      payload.slackChannel,
-      messageTs,
+    await notifier.postError(
+      handle,
       `An error occurred: ${errorMessage}`,
-      traceId,
-      payload.messageTs
+      traceId
     );
   }
 }

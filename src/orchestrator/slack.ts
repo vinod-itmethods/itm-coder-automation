@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api';
 import { getSlackBotToken } from '../shared/secrets.js';
 import { logger } from '../shared/logger.js';
 import type { ParsedIntent } from '../shared/types.js';
+import type { StatusNotifier } from './notifier.js';
 
 let _client: WebClient | null = null;
 
@@ -12,179 +13,183 @@ async function getClient(): Promise<WebClient> {
   return _client;
 }
 
-// ============================================================
-// Post provisioning status (initial message)
-// ============================================================
-export async function postStatusMessage(
-  channel: string,
-  intent: ParsedIntent,
-  traceId: string,
-  threadTs?: string
-): Promise<string> {
-  const client = await getClient();
+export class SlackNotifier implements StatusNotifier {
+  private channel: string;
+  private threadTs: string;
 
-  const result = await client.chat.postMessage({
-    channel,
-    thread_ts: threadTs,
-    text: `Provisioning workspace "${intent.workspace.name}"...`,
-    blocks: [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: 'ONEdevops Workspace Provisioning', emoji: true },
-      },
+  constructor(channel: string, threadTs: string) {
+    this.channel = channel;
+    this.threadTs = threadTs;
+  }
+
+  async postStatusMessage(intent: ParsedIntent, traceId: string): Promise<string> {
+    const client = await getClient();
+
+    const result = await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: this.threadTs,
+      text: `Provisioning workspace "${intent.workspace.name}"...`,
+      blocks: [
+        {
+          type: 'header',
+          text: { type: 'plain_text', text: 'ONEdevops Workspace Provisioning', emoji: true },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: [
+              `*Template:* ${intent.workspace.templateName}`,
+              `*Repository:* ${intent.repository.url || 'None specified'}`,
+              `*Branch:* ${intent.repository.branch}`,
+              `*Workspace:* ${intent.workspace.name}`,
+            ].join('\n'),
+          },
+        },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Plan:*\n${intent.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+          },
+        },
+        { type: 'divider' },
+        {
+          type: 'context',
+          elements: [
+            { type: 'mrkdwn', text: `:hourglass_flowing_sand: *Status:* Queued for provisioning...` },
+            { type: 'mrkdwn', text: `Trace: \`${traceId}\`` },
+          ],
+        },
+      ],
+    });
+
+    const messageTs = result.ts!;
+    logger.info('Posted status message to Slack', { channel: this.channel, messageTs });
+    return messageTs;
+  }
+
+  async updateStatus(handle: string, status: string, emoji: string): Promise<void> {
+    const client = await getClient();
+
+    await client.chat.update({
+      channel: this.channel,
+      ts: handle,
+      text: status,
+      blocks: undefined,
+    });
+
+    await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: handle,
+      text: `${emoji} ${status}`,
+    });
+
+    logger.info('Updated Slack status', { channel: this.channel, status });
+  }
+
+  async postCompletion(
+    handle: string,
+    workspaceUrl: string,
+    traceUrl: string,
+    durationSec: number
+  ): Promise<void> {
+    const client = await getClient();
+
+    await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: handle,
+      text: `Workspace ready! ${workspaceUrl}`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: [
+              ':white_check_mark: *Workspace Ready!*',
+              '',
+              `:link: <${workspaceUrl}|Open Workspace>`,
+              `:clipboard: <${traceUrl}|View Trace>`,
+              `:stopwatch: Completed in ${durationSec}s`,
+            ].join('\n'),
+          },
+        },
+      ],
+    });
+
+    logger.info('Posted completion to Slack', { channel: this.channel, workspaceUrl, durationSec });
+  }
+
+  async postError(
+    handle: string | null,
+    error: string,
+    traceId: string
+  ): Promise<void> {
+    const client = await getClient();
+
+    const blocks = [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: [
-            `*Template:* ${intent.workspace.templateName}`,
-            `*Repository:* ${intent.repository.url || 'None specified'}`,
-            `*Branch:* ${intent.repository.branch}`,
-            `*Workspace:* ${intent.workspace.name}`,
-          ].join('\n'),
+          text: `:x: *Provisioning Failed*\n\n${error}\n\nTrace: \`${traceId}\``,
         },
       },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Plan:*\n${intent.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+    ];
+
+    await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: handle || this.threadTs,
+      text: `Provisioning failed: ${error}`,
+      blocks,
+    });
+
+    logger.error('Posted error to Slack', { channel: this.channel, error, traceId });
+  }
+
+  async postClarification(message: string): Promise<void> {
+    const client = await getClient();
+
+    await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: this.threadTs,
+      text: message,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `:thinking_face: *I need a bit more info*\n\n${message}`,
+          },
         },
-      },
-      { type: 'divider' },
-      {
-        type: 'context',
-        elements: [
-          { type: 'mrkdwn', text: `:hourglass_flowing_sand: *Status:* Queued for provisioning...` },
-          { type: 'mrkdwn', text: `Trace: \`${traceId}\`` },
-        ],
-      },
-    ],
-  });
+      ],
+    });
+  }
 
-  const messageTs = result.ts!;
-  logger.info('Posted status message to Slack', { channel, messageTs });
-  return messageTs;
-}
+  async postKbAnswer(answer: string): Promise<void> {
+    const client = await getClient();
 
-// ============================================================
-// Update status in-place
-// ============================================================
-export async function updateStatus(
-  channel: string,
-  messageTs: string,
-  status: string,
-  emoji: string
-): Promise<void> {
-  const client = await getClient();
-
-  await client.chat.update({
-    channel,
-    ts: messageTs,
-    text: status,
-    blocks: undefined, // keep existing blocks, just update the last context block
-  });
-
-  // Post a thread reply with the status update for visibility
-  await client.chat.postMessage({
-    channel,
-    thread_ts: messageTs,
-    text: `${emoji} ${status}`,
-  });
-
-  logger.info('Updated Slack status', { channel, status });
-}
-
-// ============================================================
-// Post completion message
-// ============================================================
-export async function postCompletion(
-  channel: string,
-  messageTs: string,
-  workspaceUrl: string,
-  traceUrl: string,
-  durationSec: number
-): Promise<void> {
-  const client = await getClient();
-
-  await client.chat.postMessage({
-    channel,
-    thread_ts: messageTs,
-    text: `Workspace ready! ${workspaceUrl}`,
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: [
-            ':white_check_mark: *Workspace Ready!*',
-            '',
-            `:link: <${workspaceUrl}|Open Workspace>`,
-            `:clipboard: <${traceUrl}|View Trace>`,
-            `:stopwatch: Completed in ${durationSec}s`,
-          ].join('\n'),
+    await client.chat.postMessage({
+      channel: this.channel,
+      thread_ts: this.threadTs,
+      text: answer,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `:books: *From the Knowledge Base:*\n\n${answer}`,
+          },
         },
-      },
-    ],
-  });
-
-  logger.info('Posted completion to Slack', { channel, workspaceUrl, durationSec });
-}
-
-// ============================================================
-// Post error message
-// ============================================================
-export async function postError(
-  channel: string,
-  messageTs: string | null,
-  error: string,
-  traceId: string,
-  threadTs?: string
-): Promise<void> {
-  const client = await getClient();
-
-  const blocks = [
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `:x: *Provisioning Failed*\n\n${error}\n\nTrace: \`${traceId}\``,
-      },
-    },
-  ];
-
-  await client.chat.postMessage({
-    channel,
-    thread_ts: messageTs || threadTs,
-    text: `Provisioning failed: ${error}`,
-    blocks,
-  });
-
-  logger.error('Posted error to Slack', { channel, error, traceId });
-}
-
-// ============================================================
-// Post clarification (low confidence)
-// ============================================================
-export async function postClarification(
-  channel: string,
-  message: string,
-  threadTs?: string
-): Promise<void> {
-  const client = await getClient();
-
-  await client.chat.postMessage({
-    channel,
-    thread_ts: threadTs,
-    text: message,
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `:thinking_face: *I need a bit more info*\n\n${message}`,
+        {
+          type: 'context',
+          elements: [
+            { type: 'mrkdwn', text: '_Sourced from Slack channel history and company documents_' },
+          ],
         },
-      },
-    ],
-  });
+      ],
+    });
+
+    logger.info('Posted KB answer to Slack', { channel: this.channel, answerLength: answer.length });
+  }
 }

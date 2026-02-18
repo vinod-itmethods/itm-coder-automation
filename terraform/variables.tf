@@ -46,6 +46,18 @@ variable "log_level" {
   default     = "info"
 }
 
+variable "kb_agent_id" {
+  description = "Bedrock KB Agent ID for Slack history queries"
+  type        = string
+  default     = "MOWMJ9OC10"
+}
+
+variable "kb_agent_alias_id" {
+  description = "Bedrock KB Agent Alias ID"
+  type        = string
+  default     = "K0DC1UMAIO"
+}
+
 variable "vpc_id" {
   description = "VPC ID for orchestrator Lambda"
   type        = string

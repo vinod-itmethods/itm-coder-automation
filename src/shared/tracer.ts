@@ -8,12 +8,12 @@ const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export class OneAgentTracer {
   readonly traceId: string;
-  private slackUserId: string;
+  private requesterId: string;
   private startTimes = new Map<string, number>();
 
-  constructor(traceId: string, slackUserId: string) {
+  constructor(traceId: string, requesterId: string) {
     this.traceId = traceId;
-    this.slackUserId = slackUserId;
+    this.requesterId = requesterId;
   }
 
   async emit(
@@ -46,7 +46,7 @@ export class OneAgentTracer {
             Item: {
               traceId: this.traceId,
               eventKey: `${eventType}#${now.toISOString()}`,
-              slackUserId: this.slackUserId,
+              requesterId: this.requesterId,
               timestamp: now.toISOString(),
               eventType,
               status,

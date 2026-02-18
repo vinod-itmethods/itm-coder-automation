@@ -29,6 +29,14 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+  KbAgentId:
+    Type: String
+    Default: MOWMJ9OC10
+    Description: Bedrock KB Agent ID for Slack history queries
+  KbAgentAliasId:
+    Type: String
+    Default: K0DC1UMAIO
+    Description: Bedrock KB Agent Alias ID
 
 Resources:
 
@@ -109,6 +117,8 @@ Resources:
           CODER_ORG_ID: !Ref CoderOrgId
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           BEDROCK_REGION: !Ref AWS::Region
+          KB_AGENT_ID: !Ref KbAgentId
+          KB_AGENT_ALIAS_ID: !Ref KbAgentAliasId
       Policies:
         - Statement:
             - Effect: Allow
@@ -119,6 +129,11 @@ Resources:
               Resource:
                 - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-*
                 - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-3-5-sonnet-*
+            - Effect: Allow
+              Action: bedrock:InvokeAgent
+              Resource:
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/${KbAgentId}
+                - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${KbAgentId}/${KbAgentAliasId}
             - Effect: Allow
               Action:
                 - dynamodb:PutItem

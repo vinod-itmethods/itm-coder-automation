@@ -13,6 +13,12 @@ data "archive_file" "orchestrator" {
   output_path = "${path.module}/../dist/orchestrator.zip"
 }
 
+data "archive_file" "jira_webhook" {
+  type        = "zip"
+  source_dir  = "${path.module}/../dist/jira-webhook"
+  output_path = "${path.module}/../dist/jira-webhook.zip"
+}
+
 # ============================================================
 # Lambda: Webhook
 # ============================================================
@@ -66,6 +72,8 @@ resource "aws_lambda_function" "orchestrator" {
       CODER_ORG_ID      = var.coder_org_id
       BEDROCK_MODEL_ID  = var.bedrock_model_id
       BEDROCK_REGION    = var.aws_region
+      KB_AGENT_ID       = var.kb_agent_id
+      KB_AGENT_ALIAS_ID = var.kb_agent_alias_id
       SECRETS_PREFIX    = "onedevops"
       LOG_LEVEL         = var.log_level
       NODE_OPTIONS      = "--enable-source-maps"
@@ -76,6 +84,34 @@ resource "aws_lambda_function" "orchestrator" {
     aws_cloudwatch_log_group.orchestrator,
     aws_iam_role_policy_attachment.orchestrator_basic,
     aws_iam_role_policy_attachment.orchestrator_vpc,
+  ]
+}
+
+# ============================================================
+# Lambda: Jira Webhook
+# ============================================================
+resource "aws_lambda_function" "jira_webhook" {
+  function_name    = "onedevops-jira-webhook-${var.stage}"
+  role             = aws_iam_role.jira_webhook.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  memory_size      = 256
+  timeout          = 10
+  filename         = data.archive_file.jira_webhook.output_path
+  source_code_hash = data.archive_file.jira_webhook.output_base64sha256
+
+  environment {
+    variables = {
+      ORCHESTRATOR_FUNCTION_NAME = "onedevops-orchestrator-${var.stage}"
+      SECRETS_PREFIX             = "onedevops"
+      LOG_LEVEL                  = var.log_level
+      NODE_OPTIONS               = "--enable-source-maps"
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.jira_webhook,
+    aws_iam_role_policy_attachment.jira_webhook_basic,
   ]
 }
 

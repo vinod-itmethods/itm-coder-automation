@@ -7,6 +7,8 @@ export interface AppConfig {
   bedrockModelId: string;
   bedrockRegion: string;
   logLevel: string;
+  kbAgentId: string;
+  kbAgentAliasId: string;
 }
 
 let _config: AppConfig | null = null;
@@ -26,6 +28,8 @@ export function getConfig(): AppConfig {
     bedrockModelId: optional('BEDROCK_MODEL_ID', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'),
     bedrockRegion: optional('BEDROCK_REGION', 'us-east-1'),
     logLevel: optional('LOG_LEVEL', 'info'),
+    kbAgentId: optional('KB_AGENT_ID', ''),
+    kbAgentAliasId: optional('KB_AGENT_ALIAS_ID', ''),
   };
 
   return _config;
