@@ -202,21 +202,38 @@ Output is validated with a Zod schema:
 
 ### 4.4 Provisioning Steps (`runPipeline`)
 
-| Step | Action |
-|---|---|
-| 1 | Emit trace event `received_slack_message` or `received_jira_comment` |
-| 2 | `GET /api/v2/organizations/{orgId}/templates` — fetch live template list |
-| 3 | `parseIntent()` via Bedrock Nova Lite — structured JSON action plan |
-| 4 | Check `confidence ≥ 0.7`; post clarification and abort if below threshold |
-| 5 | Normalize repository URL (short name → full GitHub URL) |
-| 6 | Post initial status message to Slack thread or Jira comment |
-| 7 | `GET /api/v2/workspaces?name=…` — validate GitHub repo accessibility |
-| 8 | Fuzzy match Coder template by ID, name, or display_name |
-| 9 | `POST /api/v2/organizations/{orgId}/members/me/workspaces` — create workspace with 6-char UUID suffix to avoid name collisions |
-| 10 | Poll `GET /api/v2/workspaces/{id}` every 10s, max 30 attempts (5 min timeout) |
-| 11 | `git clone --depth 1 {url}`, checkout onboarding branch, configure git identity |
-| 12 | Emit `secrets_injected` trace event |
-| 13 | Post workspace URL and trace URL as completion message |
+| Step | Action | Status |
+|---|---|---|
+| 1 | Emit trace event `received_slack_message` or `received_jira_comment` | Implemented |
+| 2 | `GET /api/v2/organizations/{orgId}/templates` — fetch live template list | Implemented |
+| 3 | `parseIntent()` via Bedrock Nova Lite — structured JSON action plan | Implemented |
+| 4 | Check `confidence ≥ 0.7`; post clarification and abort if below threshold | Implemented |
+| 5 | Normalize repository URL (short name → full GitHub URL) | Implemented |
+| 6 | Post initial status message to Slack thread or Jira comment | Implemented |
+| 7 | `GET /api/v2/workspaces?name=…` — validate GitHub repo accessibility | Implemented |
+| 8 | Fuzzy match Coder template by ID, name, or display_name | Implemented |
+| 9 | `POST /api/v2/organizations/{orgId}/members/me/workspaces` — create workspace with 6-char UUID suffix to avoid name collisions | Implemented |
+| 10 | Poll `GET /api/v2/workspaces/{id}` every 10s, max 30 attempts (5 min timeout) | Implemented |
+| 11 | `git clone`, `git checkout -b`, `git config user.name/email` via `execInWorkspace()` | **Stub — not implemented for live Coder** (see below) |
+| 12 | Emit `secrets_injected` trace event | Implemented (event only, no injection logic yet) |
+| 13 | Post workspace URL and trace URL as completion message | Implemented |
+
+#### Step 11 — Repo Checkout: Current Status
+
+The pipeline calls `execInWorkspace()` (`src/orchestrator/coder.ts`) with four commands in sequence:
+
+```
+git clone --depth 1 <url> /home/coder/project
+cd /home/coder/project && git checkout -b <branch>
+cd /home/coder/project && git config user.name "<name>"
+cd /home/coder/project && git config user.email "<email>"
+```
+
+`execInWorkspace()` is **not yet implemented for live Coder**. It currently logs a warning and returns a `[NOT IMPLEMENTED]` stub string. The `repo_cloned` trace event is still emitted, but no commands actually execute in the workspace pod.
+
+**What needs to be built:** The Coder agent exec API requires first resolving the workspace agent ID, then calling `POST /api/v2/workspaceagents/{agentId}/exec` with the command. The agent ID is returned as part of the workspace build response but is not currently captured in `createWorkspace()`.
+
+**Coding agent install is unaffected** — GitHub Copilot is installed by the template `startup_script` at pod boot, independent of the pipeline (see Section 7.2).
 
 ---
 
@@ -349,10 +366,60 @@ Key design decisions reflected in `coder-templates/*/main.tf`:
 | **Agent binary** | Downloaded via curl with fallback: internal short name → internal FQDN → external URL |
 | **Volumes** | `emptyDir` (no PVC) — faster startup, no storage class dependency |
 | **Node tolerations** | `coder.com/provisioner=true:NoSchedule` and `app=coder:NoSchedule` |
-| **GitHub Copilot** | VSIX sideload (not available on Open VSX registry) via startup_script |
-| **AI Bridge** | `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` set to Coder AI Bridge proxy for governed AI access |
 
-### 7.3 Coder API Interaction
+### 7.3 Coding Agent Setup (GitHub Copilot + AI Bridge)
+
+This happens **automatically at pod startup** for every workspace, independently of the provisioning pipeline. There are two layers:
+
+#### GitHub Copilot (code-server extension)
+
+All three templates run the same `startup_script` inside the Coder agent as soon as the pod reaches `running` state:
+
+```bash
+# 1. Ensure jq is present (needed by the install script)
+which jq >/dev/null 2>&1 || apt-get install -y jq
+
+# 2. Idempotent check — skip if already installed
+if ! code-server --list-extensions | grep -qi "github.copilot"; then
+  # 3. VSIX sideload via community install script
+  curl -fsSL https://raw.githubusercontent.com/sunpix/howto-install-copilot-in-code-server/main/install-copilot.sh | bash
+fi
+```
+
+**Why VSIX sideload?** GitHub Copilot is not published to the Open VSX registry (the extension marketplace code-server uses by default). It must be downloaded as a `.vsix` package and installed directly into code-server. The community script handles fetching the latest VSIX and calling `code-server --install-extension`.
+
+**Idempotence:** The extension check runs on every workspace start/restart. If Copilot is already installed it is skipped, so restarts don't reinstall unnecessarily.
+
+**Per-template dev tooling** installed alongside Copilot:
+
+| Template | Additional tools |
+|---|---|
+| Python 3 | `black`, `flake8`, `mypy`, `pytest` |
+| Node.js 20 | `typescript`, `ts-node`, `eslint`, `prettier` |
+| Java 21 | *(none beyond JDK — Maven/Gradle expected in repo)* |
+
+#### AI Bridge (Coder-governed AI proxy)
+
+Every template sets four environment variables on the `coder_agent` resource:
+
+```hcl
+env = {
+  ANTHROPIC_BASE_URL = "${workspace.access_url}/api/v2/aibridge/anthropic"
+  ANTHROPIC_API_KEY  = workspace_owner.session_token
+  OPENAI_BASE_URL    = "${workspace.access_url}/api/v2/aibridge/openai/v1"
+  OPENAI_API_KEY     = workspace_owner.session_token
+}
+```
+
+Any AI SDK that respects `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` (Claude SDK, OpenAI SDK, LangChain, Continue.dev, etc.) will automatically route through Coder's AI Bridge instead of calling the model providers directly. This gives:
+
+- **Governance** — all AI calls are logged and attributed to the workspace owner
+- **Cost tracking** — token usage is visible in Coder's admin dashboard
+- **No API key management** — the workspace owner's Coder session token is reused; no separate Anthropic or OpenAI key needed per developer
+
+The AI Bridge is transparent to the developer: tools like GitHub Copilot Chat, Continue.dev, or custom scripts work without any code changes.
+
+### 7.4 Coder API Interaction
 
 | Operation | Endpoint |
 |---|---|
@@ -421,8 +488,8 @@ Every provisioning run emits structured events to DynamoDB with a UUID trace ID:
 | `bedrock_plan_created` | After confidence check passes — includes steps array |
 | `coder_template_selected` | After fuzzy template match |
 | `coder_workspace_created` | After workspace create API call returns |
-| `repo_cloned` | After git clone + branch checkout |
-| `secrets_injected` | After secret references resolved |
+| `repo_cloned` | Emitted after `execInWorkspace()` calls for git clone/checkout — **note: exec is currently a stub; event fires but commands do not run** |
+| `secrets_injected` | Emitted after secret reference count is recorded — **note: no actual secret injection logic implemented yet** |
 | `workspace_ready` | On completion — includes workspace URL and duration |
 | `error` | On any unhandled exception — sanitized message only |
 
@@ -445,6 +512,10 @@ Trace URL format: `{tracesBaseUrl}/traces/{traceId}`
 | JiraNotifier updateStatus | No-op | Jira Cloud does not support editing comments in-place; only post initial plan + final result |
 | Orchestrator in VPC | Private subnets + NAT | Required for Coder API connectivity (internal K8s cluster) |
 | Secrets in Secrets Manager | `onedevops/*` prefix | Centralised, audited, never in env vars or logs |
+| Copilot via VSIX sideload | `startup_script` on pod boot | Not on Open VSX registry; must be installed as a `.vsix` package directly into code-server |
+| Copilot install is idempotent | Extension check before install | Avoids reinstalling on every workspace restart |
+| AI Bridge env vars | Set on `coder_agent`, not in container env | Any AI SDK respecting base URL env vars routes through Coder automatically, no per-dev API keys needed |
+| `execInWorkspace` not implemented | Stub returns `[NOT IMPLEMENTED]` | Coder agent exec API requires resolving agent ID from build response — planned, not yet built |
 
 ---
 
