@@ -202,38 +202,53 @@ Output is validated with a Zod schema:
 
 ### 4.4 Provisioning Steps (`runPipeline`)
 
-| Step | Action | Status |
-|---|---|---|
-| 1 | Emit trace event `received_slack_message` or `received_jira_comment` | Implemented |
-| 2 | `GET /api/v2/organizations/{orgId}/templates` — fetch live template list | Implemented |
-| 3 | `parseIntent()` via Bedrock Nova Lite — structured JSON action plan | Implemented |
-| 4 | Check `confidence ≥ 0.7`; post clarification and abort if below threshold | Implemented |
-| 5 | Normalize repository URL (short name → full GitHub URL) | Implemented |
-| 6 | Post initial status message to Slack thread or Jira comment | Implemented |
-| 7 | `GET /api/v2/workspaces?name=…` — validate GitHub repo accessibility | Implemented |
-| 8 | Fuzzy match Coder template by ID, name, or display_name | Implemented |
-| 9 | `POST /api/v2/organizations/{orgId}/members/me/workspaces` — create workspace with 6-char UUID suffix to avoid name collisions | Implemented |
-| 10 | Poll `GET /api/v2/workspaces/{id}` every 10s, max 30 attempts (5 min timeout) | Implemented |
-| 11 | `git clone`, `git checkout -b`, `git config user.name/email` via `execInWorkspace()` | **Stub — not implemented for live Coder** (see below) |
-| 12 | Emit `secrets_injected` trace event | Implemented (event only, no injection logic yet) |
-| 13 | Post workspace URL and trace URL as completion message | Implemented |
+| Step | Action |
+|---|---|
+| 1 | Emit trace event `received_slack_message` or `received_jira_comment` |
+| 2 | `GET /api/v2/organizations/{orgId}/templates` — fetch live template list |
+| 3 | `parseIntent()` via Bedrock Nova Lite — structured JSON action plan |
+| 4 | Check `confidence ≥ 0.7`; post clarification and abort if below threshold |
+| 5 | Normalize repository URL (short name → full GitHub URL) |
+| 6 | Post initial status message to Slack thread or Jira comment |
+| 7 | `GET /api/v2/workspaces?name=…` — validate GitHub repo accessibility |
+| 8 | Fuzzy match Coder template by ID, name, or display_name |
+| 9 | `POST /api/v2/organizations/{orgId}/members/me/workspaces` — create workspace with 6-char UUID suffix to avoid name collisions |
+| 10 | Poll `GET /api/v2/workspaces/{id}` every 10s, max 30 attempts (5 min timeout) |
+| 11 | Wait for agent to connect, then run git clone, checkout, and git config via `execInWorkspace()` |
+| 12 | Emit `secrets_injected` trace event |
+| 13 | Post workspace URL and trace URL as completion message |
 
-#### Step 11 — Repo Checkout: Current Status
+#### Step 11 — Repo Checkout Detail
 
-The pipeline calls `execInWorkspace()` (`src/orchestrator/coder.ts`) with four commands in sequence:
+After the workspace build is `running`, the pipeline calls `execInWorkspace()` four times in sequence:
 
 ```
 git clone --depth 1 <url> /home/coder/project
 cd /home/coder/project && git checkout -b <branch>
-cd /home/coder/project && git config user.name "<name>"
-cd /home/coder/project && git config user.email "<email>"
+cd /home/coder/project && git config user.name "<name>"    # if inferred by Bedrock
+cd /home/coder/project && git config user.email "<email>"  # if inferred by Bedrock
 ```
 
-`execInWorkspace()` is **not yet implemented for live Coder**. It currently logs a warning and returns a `[NOT IMPLEMENTED]` stub string. The `repo_cloned` trace event is still emitted, but no commands actually execute in the workspace pod.
+**Agent resolution** (`getWorkspaceAgentId` in `src/orchestrator/coder.ts`):
+- `GET /api/v2/workspaces/{workspaceId}` returns `latest_build.resources[].agents`
+- Polls every 2 seconds for up to 30 seconds until an agent with `status: "connected"` is found
+- The agent ID is cached in memory — resolved once and reused for all exec calls on the same workspace
+- Throws if no agent connects within 30 seconds
 
-**What needs to be built:** The Coder agent exec API requires first resolving the workspace agent ID, then calling `POST /api/v2/workspaceagents/{agentId}/exec` with the command. The agent ID is returned as part of the workspace build response but is not currently captured in `createWorkspace()`.
+**Exec API** (`POST /api/v2/workspaceagents/{agentId}/exec`):
 
-**Coding agent install is unaffected** — GitHub Copilot is installed by the template `startup_script` at pod boot, independent of the pipeline (see Section 7.2).
+Request:
+```json
+{ "command": "<shell command>", "cwd": "/home/coder", "timeout_ms": 120000 }
+```
+Response:
+```json
+{ "exit_code": 0, "stdout": "...", "stderr": "..." }
+```
+
+- Commands run as `/bin/sh -c <command>`, so `&&` chaining works
+- Fetch timeout is 130 seconds (10s over the server-side command timeout so the HTTP layer does not cut off before the server returns a clean `exit_code`)
+- Non-zero `exit_code` throws with the first 500 chars of stderr/stdout as the error message
 
 ---
 
@@ -426,7 +441,8 @@ The AI Bridge is transparent to the developer: tools like GitHub Copilot Chat, C
 | List templates | `GET /api/v2/organizations/{orgId}/templates` |
 | Create workspace | `POST /api/v2/organizations/{orgId}/members/me/workspaces` |
 | Poll status | `GET /api/v2/workspaces/{workspaceId}` |
-| Exec in workspace | `POST /api/v2/workspaceagents/{agentId}/exec` *(planned)* |
+| Resolve agent ID | `GET /api/v2/workspaces/{workspaceId}` → `latest_build.resources[].agents` |
+| Exec in workspace | `POST /api/v2/workspaceagents/{agentId}/exec` |
 
 **Template matching** uses fuzzy logic: exact ID → exact name → exact display_name → partial substring match.
 
@@ -488,8 +504,8 @@ Every provisioning run emits structured events to DynamoDB with a UUID trace ID:
 | `bedrock_plan_created` | After confidence check passes — includes steps array |
 | `coder_template_selected` | After fuzzy template match |
 | `coder_workspace_created` | After workspace create API call returns |
-| `repo_cloned` | Emitted after `execInWorkspace()` calls for git clone/checkout — **note: exec is currently a stub; event fires but commands do not run** |
-| `secrets_injected` | Emitted after secret reference count is recorded — **note: no actual secret injection logic implemented yet** |
+| `repo_cloned` | After agent connects and all git commands complete (`clone`, `checkout -b`, `git config`) |
+| `secrets_injected` | After secret reference count is recorded (injection not yet implemented) |
 | `workspace_ready` | On completion — includes workspace URL and duration |
 | `error` | On any unhandled exception — sanitized message only |
 
@@ -515,7 +531,9 @@ Trace URL format: `{tracesBaseUrl}/traces/{traceId}`
 | Copilot via VSIX sideload | `startup_script` on pod boot | Not on Open VSX registry; must be installed as a `.vsix` package directly into code-server |
 | Copilot install is idempotent | Extension check before install | Avoids reinstalling on every workspace restart |
 | AI Bridge env vars | Set on `coder_agent`, not in container env | Any AI SDK respecting base URL env vars routes through Coder automatically, no per-dev API keys needed |
-| `execInWorkspace` not implemented | Stub returns `[NOT IMPLEMENTED]` | Coder agent exec API requires resolving agent ID from build response — planned, not yet built |
+| `execInWorkspace` agent resolution | Poll `GET /workspaces/{id}` for `connected` agent before exec | Build status `running` doesn't guarantee agent is immediately connected; 2s poll up to 30s handles startup lag |
+| Agent ID cached per workspace | `Map<workspaceId, agentId>` | Agent ID doesn't change within a workspace lifecycle; resolving once avoids redundant API calls across the 4 git commands |
+| Exec fetch timeout > command timeout | 130s fetch, 120s command | HTTP layer must not abort before the server returns a clean `exit_code` response |
 
 ---
 

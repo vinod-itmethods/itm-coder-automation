@@ -141,6 +141,19 @@ export interface CoderTemplate {
   active_version_id: string;
 }
 
+export interface CoderWorkspaceAgent {
+  id: string;
+  name: string;
+  status: 'connecting' | 'connected' | 'disconnected' | 'timeout';
+}
+
+export interface CoderWorkspaceBuildResource {
+  id: string;
+  type: string;
+  name: string;
+  agents?: CoderWorkspaceAgent[];
+}
+
 export interface CoderWorkspace {
   id: string;
   name: string;
@@ -150,8 +163,15 @@ export interface CoderWorkspace {
     id: string;
     status: 'pending' | 'starting' | 'running' | 'stopping' | 'stopped' | 'failed' | 'canceling' | 'canceled' | 'deleting' | 'deleted';
     build_number: number;
+    resources?: CoderWorkspaceBuildResource[];
   };
   access_url?: string;
+}
+
+export interface CoderExecResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
 }
 
 export interface CreateWorkspaceParams {

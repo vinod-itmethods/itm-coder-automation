@@ -2,7 +2,7 @@ import { getConfig } from '../shared/config.js';
 import { getCoderApiToken } from '../shared/secrets.js';
 import { withRetry } from '../shared/retry.js';
 import { logger } from '../shared/logger.js';
-import type { CoderTemplate, CoderWorkspace, CreateWorkspaceParams } from '../shared/types.js';
+import type { CoderTemplate, CoderWorkspace, CoderExecResult, CreateWorkspaceParams } from '../shared/types.js';
 
 let _token: string | null = null;
 
@@ -12,7 +12,7 @@ async function getToken(): Promise<string> {
   return _token;
 }
 
-async function coderFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function coderFetch<T>(path: string, options: RequestInit = {}, timeoutMs = 15_000): Promise<T> {
   const config = getConfig();
 
   if (!config.coderBaseUrl) {
@@ -31,7 +31,7 @@ async function coderFetch<T>(path: string, options: RequestInit = {}): Promise<T
       'Coder-Session-Token': token,
       ...options.headers,
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
@@ -199,21 +199,109 @@ export async function pollUntilReady(
 }
 
 // ============================================================
-// Execute command in workspace (via agent)
+// Resolve workspace agent ID (with connectivity wait)
+// Cached per workspaceId — resolved once, reused for all exec calls.
+// ============================================================
+const _agentIdCache = new Map<string, string>();
+
+async function getWorkspaceAgentId(
+  workspaceId: string,
+  maxWaitMs = 30_000,
+): Promise<string> {
+  if (_agentIdCache.has(workspaceId)) return _agentIdCache.get(workspaceId)!;
+
+  // GET /workspaces/{id} returns latest_build.resources[].agents
+  // The build status is already 'running' by this point (pollUntilReady passed),
+  // but the agent binary may still be starting. Poll until it shows 'connected'.
+  const intervalMs = 2_000;
+  const maxAttempts = Math.ceil(maxWaitMs / intervalMs);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ws = await coderFetch<CoderWorkspace>(`/api/v2/workspaces/${workspaceId}`);
+    const resources = ws.latest_build.resources ?? [];
+
+    for (const resource of resources) {
+      const connected = resource.agents?.find((a) => a.status === 'connected');
+      if (connected) {
+        logger.info('Workspace agent connected', {
+          workspaceId,
+          agentId: connected.id,
+          agentName: connected.name,
+          attempt,
+        });
+        _agentIdCache.set(workspaceId, connected.id);
+        return connected.id;
+      }
+    }
+
+    const statuses = resources
+      .flatMap((r) => r.agents ?? [])
+      .map((a) => `${a.name}:${a.status}`)
+      .join(', ');
+
+    logger.info('Waiting for workspace agent to connect', {
+      workspaceId,
+      attempt,
+      statuses: statuses || 'no agents yet',
+    });
+
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  throw new Error(
+    `Workspace agent did not connect within ${maxWaitMs / 1000}s for workspace ${workspaceId}`,
+  );
+}
+
+// ============================================================
+// Execute command in workspace via agent exec API
 // ============================================================
 export async function execInWorkspace(
-  _workspaceId: string,
-  command: string
+  workspaceId: string,
+  command: string,
+  cwd = '/home/coder',
 ): Promise<string> {
   const config = getConfig();
 
   if (!config.coderBaseUrl) {
-    logger.info('Coder stubbed: would execute', { command });
+    logger.info('Coder stubbed: would execute', { command, cwd });
     return `[STUB] Executed: ${command}`;
   }
 
-  // TODO: Implement via Coder workspace agent exec API
-  // This requires getting the agent ID first, then POST /api/v2/workspaceagents/{agent}/exec
-  logger.warn('execInWorkspace not yet implemented for live Coder', { command });
-  return `[NOT IMPLEMENTED] ${command}`;
+  const agentId = await getWorkspaceAgentId(workspaceId);
+
+  // Command timeout: 2 minutes per command (git clone of large repos can be slow).
+  // Fetch timeout is set slightly higher so the HTTP layer doesn't cut off before
+  // the server-side timeout fires and returns a clean exit_code response.
+  const commandTimeoutMs = 120_000;
+  const fetchTimeoutMs = commandTimeoutMs + 10_000;
+
+  logger.info('Executing command in workspace', { workspaceId, agentId, command, cwd });
+
+  const result = await coderFetch<CoderExecResult>(
+    `/api/v2/workspaceagents/${agentId}/exec`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ command, cwd, timeout_ms: commandTimeoutMs }),
+    },
+    fetchTimeoutMs,
+  );
+
+  logger.info('Command completed', {
+    workspaceId,
+    agentId,
+    command,
+    exitCode: result.exit_code,
+    stdoutLength: result.stdout.length,
+    stderrLength: result.stderr.length,
+  });
+
+  if (result.exit_code !== 0) {
+    const detail = (result.stderr || result.stdout).trim().slice(0, 500);
+    throw new Error(`Command exited ${result.exit_code}: ${detail}`);
+  }
+
+  return result.stdout;
 }
