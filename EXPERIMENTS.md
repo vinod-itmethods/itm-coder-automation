@@ -61,6 +61,12 @@ CI: add `SONAR_TOKEN` as a repo secret; the workflow
 `.github/workflows/sonar-pr-analysis.yml` runs on PRs to `dev`/`main` with a
 full clone and explicit PR params.
 
+> **CI network caveat (observed):** the staging Server is behind an
+> IP-allowlisted ingress. GitHub-**hosted** runners are blocked — the scanner
+> gets `HTTP 403` on `/api/server/version` even with a valid token (while local
+> runs from an allowlisted machine get `200`). Use a **self-hosted runner**
+> inside the network, or run the scanner locally. This is not a token problem.
+
 Local (fast iteration):
 
 ```bash

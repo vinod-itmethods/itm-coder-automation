@@ -10,6 +10,11 @@ on:
 jobs:
   sonarqube:
     name: SonarQube PR Analysis
+    # NOTE: the staging Server (itmethods-stage.devopsx.io) is behind an
+    # IP-allowlisted ingress. GitHub-hosted runners are blocked (HTTP 403 on
+    # /api/server/version even with a valid token), so use a SELF-HOSTED runner
+    # inside the allowlisted network. The local runner (scripts/run-pr-analysis.sh)
+    # works from an allowlisted machine. Change to: runs-on: [self-hosted]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full clone for diff scoping)
