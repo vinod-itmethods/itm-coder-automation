@@ -133,6 +133,39 @@ are not in the active Quality Profile, so they did not raise issues.
 | C | Summary-only | toggle **Enable analysis summary** (`summaryCommentEnabled`) off/on | only the Conversation-tab summary changes; annotations unaffected | ✅ **Confirmed.** Set to `false`, re-analyzed: the `SonarQube Code Analysis` check, `failure` gate status, and all **3 annotations remained**. The toggle governs only the optional Conversation-tab summary comment (which this version/config didn't post anyway — the summary sits in the check-run output). **No effect on annotations or gate.** |
 | D | Annotation suppression | search Server settings/API for an annotation toggle or `sonar.pullrequest.github.*` prop | if a Server "Enable Issue Annotations" equivalent exists: annotations gone, gate check + summary stay | **DONE — none exists.** `GET api/settings/list_definitions` on 2026.3.1 has **zero** annotation/inline keys and no "Pull Requests → Issue Annotations" category (that is a **SonarQube Cloud-only** setting). The only decoration parameter on the GitHub binding is `summaryCommentEnabled` (summary comment). Legacy `sonar.github.disableInlineComments` belongs to the removed GitHub plugin and has no effect. |
 
+## Experiment E — trying to reproduce the "Unchanged files" noise (revealing)
+
+Modified only the **top** of an existing file (`tracer.ts`) that carries
+pre-existing issues on lines 11–12 (PR #4, diff = lines 1–4 only), then ran a
+**shallow** PR analysis expecting the old issues to be annotated on unchanged
+lines.
+
+**Result: it did NOT reproduce.** The check posted `Quality Gate passed`,
+**0 annotations**, and SonarQube reported **0 new-code issues** on the PR — even
+under a shallow clone. Because the base branch `dev` is analyzed on the server,
+SonarQube diffs the PR against that **server-side reference** and correctly
+treats the pre-existing issues as *not new*.
+
+**Implication (important for the customer):** the *"Unchanged files with check
+annotations"* noise is **not inherent** to PR decoration. It appears only when
+new-code detection has **no valid reference** — target branch never analyzed on
+the server, no *Reference branch* New Code definition, or missing/incorrect PR
+params — so pre-existing issues get misclassified as "new" and annotated on
+unchanged lines. Fix the reference and the noise disappears while the gate check
+stays. A clean PR then shows a **green check with zero annotations**.
+
+## Permission tests (live, PR #2 / #3)
+
+| GitHub App permission | Gate check | Annotations | Summary |
+|---|---|---|---|
+| Checks: Read & write (normal) | ✅ | ✅ | ✅ |
+| Checks R/W, Pull requests: read-only | ✅ | ✅ | ✅ (in check output) |
+| **Checks: read-only** (any PR setting) | ❌ | ❌ | ❌ (CE warns `checks:write` missing) |
+| Restored Checks R/W + re-approved installation | ✅ | ✅ | ✅ |
+
+Confirms annotations + gate + summary are one Checks-API check run: reducing the
+app to read-only removes **all** decoration, not just annotations.
+
 ## Conclusion
 
 On **SonarQube Server 2026.3.1** there is **no setting or scanner property** that
