@@ -79,25 +79,38 @@ PR_KEY=<pr#> PR_BRANCH=exp/pr-decoration-noise PR_BASE=dev SHALLOW=0 ./scripts/r
 - PR #1 opened (`exp/pr-decoration-noise` → `dev`).
 - CI secret `SONAR_TOKEN` set on the repo.
 
-## BLOCKER — GitHub App not installed
+## BLOCKER (RESOLVED) — GitHub App installation + SonarCloud contamination
 
-The GitHub App `sq-github-itm` (appId **4425448**) is *configured* in SonarQube
-but has **no installation** on the `vinod-itmethods` account. The Compute Engine
-task for the PR analysis succeeds but decoration fails with:
+Two issues had to be cleared before staging-Server decoration worked:
 
-> Failed to report status to Devops platform: **GitHub Application has no
-> installations.** Contact your SonarQube administrator to fix the problem.
+1. **GitHub App not installed.** The App `sq-github-itm` (appId **4425448**,
+   GitHub slug `sonarqube-git-itm`) was *configured* in SonarQube (validate =
+   204, key matches appId) but GitHub returned **no installation** for the repo,
+   so the CE task succeeded while decoration failed with *"GitHub Application
+   has no installations."* Fixed by installing the App on `vinod-itmethods` with
+   access to `itm-coder-automation` (GitHub account-owner action / permission
+   grant — done by the repo owner, not automatable).
+2. **SonarCloud was also decorating the repo.** A pre-existing SonarCloud
+   binding + SonarCloud's GitHub Advanced Security code-scanning were posting
+   their *own* checks/annotations (`sonarqubecloud` appId 12526,
+   `github-advanced-security` 57789) that referenced `sonarcloud.io` — easy to
+   mistake for the staging Server. Silenced by turning off SonarCloud Automatic
+   Analysis for the project. (Stale SonarCloud checks persist on already-analyzed
+   commits; they drop off on a fresh commit.)
 
-Consequence: no "SonarQube Code Analysis" check run and no annotations can be
-posted from the staging Server until the App is installed on the repo. (The
-`sonarqubecloud` / "SonarCloud Code Analysis" checks already on the PR are from
-a **pre-existing SonarCloud binding**, not this staging Server.)
+### Decoration anatomy on the staging Server (observed, PR #1)
 
-**Fix (GitHub account-owner action — a permission grant, must be done by you):**
-install the `sq-github-itm` App on `vinod-itmethods` with access to
-`itm-coder-automation`. Find its install link via SonarQube → Administration →
-Configuration → DevOps Platform Integrations → GitHub → `sq-github-itm`, or via
-the App owner's GitHub *Developer settings → GitHub Apps → Install App*.
+One GitHub check run — `SonarQube Code Analysis`, app `sonarqube-git-itm`
+(4425448), check-run id `90711021555` — carries **all** of:
+- gate status → `conclusion: failure`, title *"Quality Gate failed"*;
+- analysis summary (*"Failed conditions … 3 New issues"*) in the check-run
+  **output** (Checks tab), linking to `itmethods-stage.devopsx.io`;
+- the **3 inline annotations** (S1135 ×2, S2486) on `health.ts`.
+
+The Server did **not** post a separate Conversation-tab summary comment on this
+version/config; the summary lives in the check-run output. Because annotations
+and gate are the *same* check run, no permission split or setting can keep one
+and drop the other — confirming Experiment D against live data.
 
 ## Experiments & results
 
@@ -109,8 +122,8 @@ are not in the active Quality Profile, so they did not raise issues.
 
 | # | Experiment | Setup | Expectation | Observed |
 |---|------------|-------|-------------|----------|
-| A | Reproduce | PR params set, **shallow** clone (depth 1) | annotations appear; unchanged-files section likely appears | Analysis ran & was **PR-scoped** (3 new-code issues, all in `health.ts`). Scanner logged *"Shallow clone detected, no blame"* + *"Could not find ref 'dev'"*. **GitHub annotations NOT observable — decoration blocked by missing App install.** |
-| B | Diff-scoping | `fetch-depth: 0` full clone + PR params | annotations collapse to changed lines; unchanged-files section disappears | **Pending App install.** SonarQube-side new-code scoping already correct in the full clone; the GitHub-side "unchanged files" section can only be observed once decoration posts. |
+| A | Reproduce | PR params set, **shallow** clone (depth 1) | annotations appear; unchanged-files section likely appears | ✅ **Reproduced.** `SonarQube Code Analysis` check posted (gate = failure) with **3 inline annotations** on `health.ts` (S1135 ×2, S2486). Scanner logged *"Shallow clone detected, no blame"* + *"Could not find ref 'dev'"*, yet all annotations landed **on the changed file only** → **no unchanged-files section**, because the analyzed base branch `dev` served as the new-code reference. |
+| B | Diff-scoping | `fetch-depth: 0` full clone + PR params | annotations collapse to changed lines; unchanged-files section disappears | Confirmed by A's outcome: with a valid base reference, annotations are already scoped to the diff. To *reproduce* the unchanged-files noise you must remove the reference (analyze the PR before the base branch is analyzed, or with no reference branch); the fix is then to guarantee full clone + analyzed base so scoping holds. |
 | C | Summary-only | toggle **Enable analysis summary** (`summaryCommentEnabled`) off/on | only the Conversation-tab summary changes; annotations unaffected | **Pending App install.** Confirmed the toggle *exists* and is the single decoration knob (binding param `summaryCommentEnabled`, default `true`). |
 | D | Annotation suppression | search Server settings/API for an annotation toggle or `sonar.pullrequest.github.*` prop | if a Server "Enable Issue Annotations" equivalent exists: annotations gone, gate check + summary stay | **DONE — none exists.** `GET api/settings/list_definitions` on 2026.3.1 has **zero** annotation/inline keys and no "Pull Requests → Issue Annotations" category (that is a **SonarQube Cloud-only** setting). The only decoration parameter on the GitHub binding is `summaryCommentEnabled` (summary comment). Legacy `sonar.github.disableInlineComments` belongs to the removed GitHub plugin and has no effect. |
 
