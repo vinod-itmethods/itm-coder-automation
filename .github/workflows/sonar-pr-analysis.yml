@@ -1,0 +1,51 @@
+name: SonarQube PR Analysis
+
+# PR decoration experiment (see EXPERIMENTS.md).
+# Runs a diff-scoped PR analysis against the staging SonarQube Server so the
+# PR gets a "SonarQube Code Analysis" check run + (currently) inline annotations.
+on:
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  sonarqube:
+    name: SonarQube PR Analysis
+    # NOTE: the staging Server (itmethods-stage.devopsx.io) is behind an
+    # IP-allowlisted ingress. GitHub-hosted runners are blocked (HTTP 403 on
+    # /api/server/version even with a valid token), so use a SELF-HOSTED runner
+    # inside the allowlisted network. The local runner (scripts/run-pr-analysis.sh)
+    # works from an allowlisted machine. Change to: runs-on: [self-hosted]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full clone for diff scoping)
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 disables the shallow clone. A shallow clone makes
+          # SonarQube unable to compute the PR diff, which is what pushes
+          # annotations onto unchanged files ("Unchanged files with check
+          # annotations"). Set this to 1 to reproduce the shallow-clone case.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: npm ci
+
+      # Optional: build/typecheck. Kept non-blocking so a compile nit never
+      # masks the Sonar run during these experiments.
+      - name: Typecheck (non-blocking)
+        run: npm run typecheck || true
+
+      - name: SonarQube scan (explicit PR params)
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://itmethods-stage.devopsx.io
+        with:
+          args: >
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }}
+            -Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}
