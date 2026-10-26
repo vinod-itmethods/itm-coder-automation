@@ -2,10 +2,24 @@ import {
   BedrockRuntimeClient,
   InvokeModelCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { getConfig } from '../shared/config.js';
+import { getAnthropicApiKey } from '../shared/secrets.js';
 import { logger } from '../shared/logger.js';
 import type { ParsedIntent } from '../shared/types.js';
+
+// Direct Anthropic API (not Bedrock) — the Bedrock claude-3-5-sonnet model is EOL.
+const ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+let _anthropic: Anthropic | null = null;
+async function getAnthropic(): Promise<Anthropic> {
+  if (_anthropic) return _anthropic;
+  _anthropic = new Anthropic({ apiKey: await getAnthropicApiKey() });
+  return _anthropic;
+}
+function textOf(msg: Anthropic.Message): string {
+  return msg.content.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
+}
 
 const IntentSchema = z.object({
   action: z.enum(['create_workspace', 'list_templates', 'workspace_status', 'help']),
@@ -111,12 +125,27 @@ const FEW_SHOT_EXAMPLES = [
   },
 ];
 
+// Plain text generation via the same (working) Bedrock Runtime InvokeModel path
+// the classifier uses. No knowledge base, no agent — a single stateless call.
+export async function generateAnswer(
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens = 1500,
+): Promise<string> {
+  const anthropic = await getAnthropic();
+  const msg = await anthropic.messages.create({
+    model: ANTHROPIC_MODEL,
+    max_tokens: maxTokens,
+    temperature: 0.2,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }],
+  });
+  return textOf(msg).trim();
+}
+
 export type MessageCategory = 'kb_query' | 'workspace_provision' | 'unknown';
 
 export async function classifyMessageIntent(messageText: string): Promise<MessageCategory> {
-  const config = getConfig();
-  const client = new BedrockRuntimeClient({ region: config.bedrockRegion });
-
   const systemPrompt = `You are a message router for the ONEdevops Slack bot.
 Classify the user message into exactly one category. Reply with ONLY the category name — no explanation, no punctuation, no other text.
 
@@ -127,36 +156,33 @@ Categories:
 
 Output ONLY one of: kb_query, workspace_provision, unknown`;
 
-  const classifyMessages = [
-    { role: 'user' as const, content: [{ text: 'What did the team discuss about CIBC last month?' }] },
-    { role: 'assistant' as const, content: [{ text: 'kb_query' }] },
-    { role: 'user' as const, content: [{ text: 'Find any conversations about the LSEG migration issues' }] },
-    { role: 'assistant' as const, content: [{ text: 'kb_query' }] },
-    { role: 'user' as const, content: [{ text: '@ONEdevops onboard backend dev for repo payments-api' }] },
-    { role: 'assistant' as const, content: [{ text: 'workspace_provision' }] },
-    { role: 'user' as const, content: [{ text: 'create workspace for repo org/frontend-app template react-node' }] },
-    { role: 'assistant' as const, content: [{ text: 'workspace_provision' }] },
-    { role: 'user' as const, content: [{ text: messageText }] },
+  const classifyMessages: Anthropic.MessageParam[] = [
+    { role: 'user', content: 'What did the team discuss about CIBC last month?' },
+    { role: 'assistant', content: 'kb_query' },
+    { role: 'user', content: 'Find any conversations about the LSEG migration issues' },
+    { role: 'assistant', content: 'kb_query' },
+    { role: 'user', content: 'what are the priorities across the launch pad channels?' },
+    { role: 'assistant', content: 'kb_query' },
+    { role: 'user', content: 'summarize what is happening in the launch pad engagements' },
+    { role: 'assistant', content: 'kb_query' },
+    { role: 'user', content: '@ONEdevops onboard backend dev for repo payments-api' },
+    { role: 'assistant', content: 'workspace_provision' },
+    { role: 'user', content: 'create workspace for repo org/frontend-app template react-node' },
+    { role: 'assistant', content: 'workspace_provision' },
+    { role: 'user', content: messageText },
   ];
 
   logger.info('Classifying message intent', { messageLength: messageText.length });
 
-  const response = await client.send(
-    new InvokeModelCommand({
-      modelId: config.bedrockModelId,
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify({
-        schemaVersion: 'messages-v1',
-        system: [{ text: systemPrompt }],
-        messages: classifyMessages,
-        inferenceConfig: { max_new_tokens: 10, temperature: 0.0 },
-      }),
-    })
-  );
-
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  const rawText: string = (responseBody.output?.message?.content?.[0]?.text || '').trim().toLowerCase();
+  const anthropic = await getAnthropic();
+  const msg = await anthropic.messages.create({
+    model: ANTHROPIC_MODEL,
+    max_tokens: 10,
+    temperature: 0,
+    system: systemPrompt,
+    messages: classifyMessages,
+  });
+  const rawText = textOf(msg).trim().toLowerCase();
 
   logger.info('Message classified', { category: rawText });
 

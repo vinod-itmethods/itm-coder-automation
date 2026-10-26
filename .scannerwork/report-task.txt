@@ -1,0 +1,6 @@
+projectKey=itm-coder-automation
+serverUrl=https://itmethods-stage.devopsx.io
+serverVersion=2026.3.1.123439
+dashboardUrl=https://itmethods-stage.devopsx.io/dashboard?id=itm-coder-automation&pullRequest=6
+ceTaskId=c7c4fcca-60ad-41da-b0ab-85e79b168c81
+ceTaskUrl=https://itmethods-stage.devopsx.io/api/ce/task?id=c7c4fcca-60ad-41da-b0ab-85e79b168c81
