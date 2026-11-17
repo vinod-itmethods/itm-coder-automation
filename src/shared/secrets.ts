@@ -59,6 +59,12 @@ export async function getGitHubToken(): Promise<string> {
   return parsed.token || parsed.value || raw;
 }
 
+export async function getAnthropicApiKey(): Promise<string> {
+  const raw = await getSecret('anthropic/api-key');
+  const parsed = parseJsonSecret(raw);
+  return parsed.apiKey || parsed.value || raw;
+}
+
 export async function getJiraCredentials(): Promise<{
   baseUrl: string;
   email: string;
