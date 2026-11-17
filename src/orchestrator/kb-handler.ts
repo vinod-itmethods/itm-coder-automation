@@ -8,15 +8,20 @@ import type { SlackNotifier } from './slack.js';
 // base, no Bedrock agent, no ingestion. We read the channels on demand and hand
 // the recent messages to Claude (via the working InvokeModel path) to summarize.
 
-// Only pull channels whose name marks them as Launch Pad (per the user's rule).
+// Pull Launch Pad channels from both automations:
+//  - presales: issue-ps-*…launch… (ITMPROSERV launchpad tickets)
+//  - SLP:      slp-* (every SLP Epic channel is a Launch Pad engagement)
+const PRESALES_PREFIX = 'issue-ps-';
+const SLP_PREFIX = 'slp-';
 const LP_NAME = /launch/i;
-const CHANNEL_PREFIX = 'issue-ps-';
 const MAX_MSGS_PER_CHANNEL = 30;
 const LOOKBACK_DAYS = 45;
 const CONTEXT_CHAR_BUDGET = 140_000; // ~35K tokens, well within Claude's window
 
 function isLaunchPadChannel(name: string | undefined): boolean {
-  return !!name && name.startsWith(CHANNEL_PREFIX) && LP_NAME.test(name);
+  if (!name) return false;
+  if (name.startsWith(SLP_PREFIX)) return true;
+  return name.startsWith(PRESALES_PREFIX) && LP_NAME.test(name);
 }
 
 async function listLaunchPadChannels(slack: WebClient): Promise<Array<{ id: string; name: string }>> {
