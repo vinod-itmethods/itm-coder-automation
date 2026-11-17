@@ -178,13 +178,13 @@ export class SlackNotifier implements StatusNotifier {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `:books: *From the Knowledge Base:*\n\n${answer}`,
+            text: `:books: *REIGNdevops — Launch Pad summary:*\n\n${answer}`,
           },
         },
         {
           type: 'context',
           elements: [
-            { type: 'mrkdwn', text: '_Sourced from Slack channel history and company documents_' },
+            { type: 'mrkdwn', text: '_Read live from the Launch Pad Slack channels — verify before relying on it_' },
           ],
         },
       ],
